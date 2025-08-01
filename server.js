@@ -3,9 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = {
-query: async () => ({ rows: [] })
-};
+const db = require('./db');
 require('dotenv').config();
 
 const app = express();
