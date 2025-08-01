@@ -15,6 +15,7 @@ app.use(cors({
   origin: ['http://localhost:3000', 'http://localhost:3001', 'https://loyaltyjoscanner.netlify.app'],
   credentials: true
 }));
+app.use(express.json());
 
 // Basic auth middleware
 const authenticateToken = (req, res, next) => {
