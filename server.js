@@ -289,7 +289,7 @@ app.post('/api/customers/register', async (req, res) => {
     const defaultCard = {
   id: '00000000-0000-0000-0000-000000000001', // Valid UUID format
   stamps_required: 10,
-  business_id: '00000000-0000-0000-0000-000000000002' // Valid UUID format
+  business_id: 'c913afc0-05fd-4b85-8261-e10e836e18b1' // Valid UUID format
 };
     
     // Check if customer exists
