@@ -41,12 +41,12 @@ const authenticateToken = (req, res, next) => {
 // Business login
 app.post('/api/login', async (req, res) => {
   try {
-    const { mobile, password } = req.body;
+    const { email, password } = req.body;
     
     // Query database for business
     const result = await db.query(
-      'SELECT * FROM businesses WHERE mobile = $1',
-      [mobile]
+      'SELECT * FROM businesses WHERE email = $1',
+      [email]
     );
     
     if (result.rows.length === 0) {
@@ -66,7 +66,7 @@ app.post('/api/login', async (req, res) => {
     const token = jwt.sign(
       { 
         businessId: business.id, 
-        mobile: business.mobile,
+        email: business.email,
         businessName: business.business_name 
       },
       JWT_SECRET,
@@ -78,7 +78,7 @@ app.post('/api/login', async (req, res) => {
       business: {
         id: business.id,
         name: business.business_name,
-        mobile: business.mobile,
+        email: business.email,
         plan: business.plan_type,
         status: business.status
       }
