@@ -14,7 +14,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001', 'https://loyaltyjoscan.netlify.app'],
+  origin: ['http://localhost:3000', 'http://localhost:3001', 'https://loyaltyjoscanner.netlify.app'],
   credentials: true
 }));
 
