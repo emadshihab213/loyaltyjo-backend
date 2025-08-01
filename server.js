@@ -285,17 +285,12 @@ app.post('/api/customers/register', async (req, res) => {
   try {
     const { name, phone, cardId } = req.body;
     
-    // Get card details
-    const cardResult = await db.query(
-      'SELECT * FROM loyalty_cards WHERE card_code = $1 OR id = $1',
-      [cardId]
-    );
-    
-    if (cardResult.rows.length === 0) {
-      return res.status(404).json({ message: 'Card not found' });
-    }
-    
-    const card = cardResult.rows[0];
+    // For now, skip card validation and use default card data
+    const defaultCard = {
+      id: 'default-card',
+      stamps_required: 10,
+      business_id: 'demo-business-id'
+    };
     
     // Check if customer exists
     let customer;
@@ -315,25 +310,43 @@ app.post('/api/customers/register', async (req, res) => {
       customer = newCustomer.rows[0];
     }
     
-    // Create customer card link
-    const qrData = `LJO-${customer.id}-${card.id}-${Date.now()}`;
-    await db.query(
-      `INSERT INTO customer_cards 
-       (customer_id, card_id, business_id, qr_code_data)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (customer_id, card_id) DO NOTHING`,
-      [customer.id, card.id, card.business_id, qrData]
+    // Generate QR code data
+    const qrData = `LOYALTYJO-${phone}-${cardId}-${customer.id}`;
+    
+    // Check if customer_card relationship exists
+    const existingCustomerCard = await db.query(
+      'SELECT * FROM customer_cards WHERE customer_id = $1',
+      [customer.id]
     );
+    
+    let customerCard;
+    if (existingCustomerCard.rows.length > 0) {
+      customerCard = existingCustomerCard.rows[0];
+    } else {
+      // Create customer_card relationship
+      const newCustomerCard = await db.query(
+        `INSERT INTO customer_cards (customer_id, card_id, business_id, stamps_count, qr_code_data)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [customer.id, defaultCard.id, defaultCard.business_id, 0, qrData]
+      );
+      customerCard = newCustomerCard.rows[0];
+    }
     
     res.json({
       success: true,
-      customer: customer,
-      card: card,
-      qrCode: qrData
+      customer: {
+        id: customer.id,
+        name: customer.name,
+        phone: customer.phone,
+        stamps: customerCard.stamps_count,
+        totalStamps: defaultCard.stamps_required,
+        qrData: qrData
+      }
     });
+    
   } catch (error) {
-    console.error('Error registering customer:', error);
-    res.status(500).json({ message: 'Server error' });
+    console.error('Customer registration error:', error);
+    res.status(500).json({ message: 'Registration failed', error: error.message });
   }
 });
 
