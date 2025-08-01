@@ -12,7 +12,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 // Middleware
 app.use(cors({
-origin: ['http://localhost:3000', 'http://localhost:3001', 'https://loyaltyjoscanner.netlify.app', 'https://delightful-syrniki-5151ef.netlify.app'],  credentials: true
+origin: ['http://localhost:3000', 'http://localhost:3001', 'https://loyaltyjoscanner.netlify.app', 'https://resplendent-rolypoly-0194d5.netlify.app'],  credentials: true
 }));
 app.use(express.json());
 
