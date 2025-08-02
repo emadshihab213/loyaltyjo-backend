@@ -12,7 +12,13 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 // Middleware
 app.use(cors({
-origin: ['http://localhost:3000', 'http://localhost:3001', 'https://loyaltyjoscanner.netlify.app', 'https://resplendent-rolypoly-0194d5.netlify.app'],  credentials: true
+  origin: [
+    'http://localhost:3000', 
+    'http://localhost:3001', 
+    'https://loyaltyjoscanner.netlify.app', 
+    'https://resplendent-rolypoly-0194d5.netlify.app'
+  ],
+  credentials: true
 }));
 app.use(express.json());
 
@@ -607,6 +613,151 @@ app.post('/api/stamps/redeem', authenticateToken, async (req, res) => {
   }
 });
 
+// ============================================
+// ADMIN PANEL ENDPOINTS
+// ============================================
+
+// Admin Authentication
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // For demo purposes, use hardcoded admin credentials
+    if (email === 'admin@loyaltyjo.com' && password === 'admin123') {
+      const token = jwt.sign(
+        { 
+          id: 'admin-001',
+          email: email,
+          role: 'admin'
+        },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '24h' }
+      );
+
+      res.json({
+        success: true,
+        token,
+        admin: {
+          id: 'admin-001',
+          email: email,
+          name: 'Admin User',
+          role: 'admin'
+        }
+      });
+    } else {
+      res.status(401).json({
+        success: false,
+        message: 'Invalid admin credentials'
+      });
+    }
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error during admin login'
+    });
+  }
+});
+
+// Admin middleware
+const authenticateAdmin = (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ message: 'No admin token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    if (decoded.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    req.admin = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Invalid admin token' });
+  }
+};
+
+// Get all businesses for admin
+app.get('/api/admin/businesses', authenticateAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('businesses')
+      .select('*');
+
+    if (error) throw error;
+
+    // Format the data for admin panel
+    const businesses = data.map(business => ({
+      id: business.id,
+      name: business.name,
+      email: business.email,
+      phone: business.phone || '+962791234567',
+      status: 'active',
+      subscriptionPlan: 'monthly',
+      customerCount: 0, // We'll calculate this properly later
+      joinDate: business.created_at,
+      lastActive: business.created_at
+    }));
+
+    res.json(businesses);
+  } catch (error) {
+    console.error('Error fetching businesses for admin:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch businesses' 
+    });
+  }
+});
+
+// Get dashboard analytics
+app.get('/api/admin/analytics/dashboard', authenticateAdmin, async (req, res) => {
+  try {
+    // Get total businesses
+    const { data: businesses, error: businessError } = await supabase
+      .from('businesses')
+      .select('id, created_at');
+
+    if (businessError) throw businessError;
+
+    // Get total customers
+    const { data: customers, error: customerError } = await supabase
+      .from('customers')
+      .select('id, created_at');
+
+    if (customerError) throw customerError;
+
+    // Calculate stats
+    const totalBusinesses = businesses.length;
+    const activeBusinesses = totalBusinesses;
+    const totalCustomers = customers.length;
+    const monthlyRevenue = activeBusinesses * 29;
+
+    res.json({
+      totalBusinesses,
+      activeBusinesses,
+      totalCustomers,
+      activeSubscriptions: activeBusinesses,
+      monthlyRevenue,
+      recentActivity: [
+        {
+          id: 1,
+          type: 'business_created',
+          message: 'New business registered',
+          time: '2 hours ago'
+        }
+      ]
+    });
+  } catch (error) {
+    console.error('Error fetching dashboard analytics:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch analytics' 
+    });
+  }
+});
+
 // ============================================================================
 // ERROR HANDLING
 // ============================================================================
@@ -621,7 +772,6 @@ app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: 'Something went wrong!' });
 });
-
 // ============================================================================
 // START SERVER
 // ============================================================================
