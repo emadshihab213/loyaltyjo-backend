@@ -969,8 +969,13 @@ app.post('/api/admin/login', async (req, res) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => {
   console.log(\`🚀 Server is running on port \${PORT}\`);
   console.log(\`📚 API documentation available at http://localhost:\${PORT}/api-docs\`);
 });" >> server.js
+
+// Start server  
+app.listen(PORT, () => {
+  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`📚 API documentation available at http://localhost:${PORT}/api-docs`);
+});
