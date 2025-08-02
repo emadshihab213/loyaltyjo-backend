@@ -17,6 +17,7 @@ app.use(cors({
     'http://localhost:3001', 
     'https://loyaltyjoscanner.netlify.app', 
     'https://resplendent-rolypoly-0194d5.netlify.app'
+    'https://precious-lolly-411bad.netlify.app'
   ],
   credentials: true
 }));
