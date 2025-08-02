@@ -146,13 +146,13 @@ app.post('/api/register', async (req, res) => {
 // Staff login
 app.post('/api/staff/login', async (req, res) => {
   try {
-    const { businessCode, mobile, password } = req.body; // Changed mobile to mobile
+    const { businessCode, mobile, password } = req.body;
     
     // For demo purposes, accept any staff credentials
     const token = jwt.sign(
       { 
         staffId: 'demo-staff-id',
-        mobile: mobile, // Changed email to mobile
+        mobile: mobile,
         role: 'staff',
         businessCode: businessCode
       },
@@ -163,7 +163,7 @@ app.post('/api/staff/login', async (req, res) => {
     res.json({
       token,
       staff: {
-        name: mobile, // Use mobile instead of email
+        name: mobile,
         role: 'staff'
       }
     });
@@ -173,6 +173,314 @@ app.post('/api/staff/login', async (req, res) => {
   }
 });
 
+// Admin auth middleware
+const authenticateAdmin = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Admin access token required' });
+  }
+  
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid admin token' });
+    if (user.role !== 'admin' && user.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Admin privileges required' });
+    }
+    req.admin = user;
+    next();
+  });
+};
+
+// ============================================================================
+// ADMIN PANEL ENDPOINTS
+// ============================================================================
+
+// Admin login
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Query database for admin user
+    const result = await db.query(
+      'SELECT * FROM admin_users WHERE email = $1 AND is_active = true',
+      [email]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid admin credentials' });
+    }
+    
+    const admin = result.rows[0];
+    
+    // For demo purposes, accept any password
+    // In production, use: const validPassword = await bcrypt.compare(password, admin.password_hash);
+    const validPassword = true; // TEMPORARY - accept any password
+    
+    if (!validPassword) {
+      return res.status(401).json({ message: 'Invalid admin credentials' });
+    }
+    
+    // Update last login
+    await db.query(
+      'UPDATE admin_users SET last_login = NOW() WHERE id = $1',
+      [admin.id]
+    );
+    
+    const token = jwt.sign(
+      { 
+        adminId: admin.id,
+        email: admin.email,
+        role: admin.role,
+        fullName: admin.full_name
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.json({
+      token,
+      admin: {
+        id: admin.id,
+        email: admin.email,
+        fullName: admin.full_name,
+        role: admin.role
+      }
+    });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get dashboard overview stats
+app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
+  try {
+    // Get total businesses
+    const businessesResult = await db.query(
+      'SELECT COUNT(*) as total, COUNT(CASE WHEN status = $1 THEN 1 END) as active FROM businesses',
+      ['active']
+    );
+    
+    // Get total customers
+    const customersResult = await db.query('SELECT COUNT(*) as total FROM customers');
+    
+    // Get active subscriptions
+    const subscriptionsResult = await db.query(
+      'SELECT COUNT(*) as total FROM business_subscriptions WHERE status = $1',
+      ['active']
+    );
+    
+    // Get monthly revenue
+    const revenueResult = await db.query(
+      `SELECT SUM(amount_paid) as total FROM business_subscriptions 
+       WHERE status = 'active' AND EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM CURRENT_DATE)`
+    );
+    
+    res.json({
+      totalBusinesses: parseInt(businessesResult.rows[0].total),
+      activeBusinesses: parseInt(businessesResult.rows[0].active),
+      totalCustomers: parseInt(customersResult.rows[0].total),
+      activeSubscriptions: parseInt(subscriptionsResult.rows[0].total),
+      monthlyRevenue: parseFloat(revenueResult.rows[0].total || 0)
+    });
+  } catch (error) {
+    console.error('Admin dashboard error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get all businesses for admin panel
+app.get('/api/admin/businesses', authenticateAdmin, async (req, res) => {
+  try {
+    const { status, search } = req.query;
+    
+    let query = `
+      SELECT 
+        b.id,
+        b.business_name,
+        b.email,
+        b.phone,
+        b.status,
+        b.created_at,
+        bs.status as subscription_status,
+        bs.end_date,
+        sp.plan_name,
+        sp.price,
+        (SELECT COUNT(*) FROM customer_cards cc WHERE cc.business_id = b.id) as customer_count
+      FROM businesses b
+      LEFT JOIN business_subscriptions bs ON b.id = bs.business_id AND bs.status = 'active'
+      LEFT JOIN subscription_plans sp ON bs.plan_id = sp.id
+    `;
+    
+    const params = [];
+    const conditions = [];
+    
+    if (status && status !== 'all') {
+      conditions.push(`b.status = $${params.length + 1}`);
+      params.push(status);
+    }
+    
+    if (search) {
+      conditions.push(`(b.business_name ILIKE $${params.length + 1} OR b.email ILIKE $${params.length + 1})`);
+      params.push(`%${search}%`);
+    }
+    
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+    
+    query += ' ORDER BY b.created_at DESC';
+    
+    const result = await db.query(query, params);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get businesses error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Create new business
+app.post('/api/admin/businesses', authenticateAdmin, async (req, res) => {
+  try {
+    const { businessName, ownerName, email, phone, planId, subscriptionType } = req.body;
+    
+    // Check if business already exists
+    const existingBusiness = await db.query(
+      'SELECT id FROM businesses WHERE email = $1',
+      [email]
+    );
+    
+    if (existingBusiness.rows.length > 0) {
+      return res.status(400).json({ message: 'Business email already exists' });
+    }
+    
+    // Create business
+    const hashedPassword = await bcrypt.hash('defaultPassword123', 10);
+    const businessResult = await db.query(
+      `INSERT INTO businesses (business_name, owner_name, email, password_hash, phone, status, plan_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [businessName, ownerName, email, hashedPassword, phone, 'active', subscriptionType]
+    );
+    
+    const business = businessResult.rows[0];
+    
+    // Create subscription
+    const plan = await db.query('SELECT * FROM subscription_plans WHERE id = $1', [planId]);
+    const planData = plan.rows[0];
+    
+    const startDate = new Date();
+    const endDate = new Date();
+    endDate.setMonth(endDate.getMonth() + planData.duration_months);
+    
+    await db.query(
+      `INSERT INTO business_subscriptions (business_id, plan_id, status, start_date, end_date, amount_paid)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [business.id, planId, 'active', startDate, endDate, planData.price]
+    );
+    
+    res.status(201).json({
+      message: 'Business created successfully',
+      business: {
+        id: business.id,
+        businessName: business.business_name,
+        email: business.email,
+        status: business.status
+      }
+    });
+  } catch (error) {
+    console.error('Create business error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get subscription plans
+app.get('/api/admin/plans', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await db.query(
+      'SELECT * FROM subscription_plans WHERE is_active = true ORDER BY price ASC'
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get plans error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get subscriptions for admin panel
+app.get('/api/admin/subscriptions', authenticateAdmin, async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT 
+        bs.*,
+        b.business_name,
+        b.email,
+        sp.plan_name,
+        sp.price
+      FROM business_subscriptions bs
+      JOIN businesses b ON bs.business_id = b.id
+      JOIN subscription_plans sp ON bs.plan_id = sp.id
+      ORDER BY bs.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get subscriptions error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update business status
+app.put('/api/admin/businesses/:id/status', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+    
+    await db.query(
+      'UPDATE businesses SET status = $1, updated_at = NOW() WHERE id = $2',
+      [status, id]
+    );
+    
+    res.json({ message: 'Business status updated successfully' });
+  } catch (error) {
+    console.error('Update business status error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Analytics endpoint for charts
+app.get('/api/admin/analytics', authenticateAdmin, async (req, res) => {
+  try {
+    const { period } = req.query; // 'week', 'month', 'year'
+    
+    // Get revenue and customer growth data
+    const revenueResult = await db.query(`
+      SELECT 
+        DATE_TRUNC('month', created_at) as month,
+        SUM(amount_paid) as revenue,
+        COUNT(*) as subscriptions
+      FROM business_subscriptions 
+      WHERE created_at >= NOW() - INTERVAL '6 months'
+      GROUP BY DATE_TRUNC('month', created_at)
+      ORDER BY month
+    `);
+    
+    // Get business status distribution
+    const statusResult = await db.query(`
+      SELECT status, COUNT(*) as count
+      FROM businesses
+      GROUP BY status
+    `);
+    
+    res.json({
+      revenueGrowth: revenueResult.rows,
+      businessStatus: statusResult.rows
+    });
+  } catch (error) {
+    console.error('Analytics error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 // ============================================================================
 // BUSINESS ROUTES
 // ============================================================================
