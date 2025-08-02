@@ -572,99 +572,66 @@ app.post('/api/loyalty-cards', authenticateToken, async (req, res) => {
   }
 });
 
-// ============================================================================
-// CUSTOMER ROUTES
-// ============================================================================
-
 // Get customers for a business
 app.get('/api/customers', authenticateToken, async (req, res) => {
   try {
+    // Get business ID from token, fallback to Sunshine Cafe ID
+    const businessId = req.user.businessId || 'c913afc0-05fd-4b85-8261-e10e836e18b1';
+    
+    console.log('Fetching customers for business:', businessId);
+    
     const result = await db.query(
-      `SELECT c.*, cc.stamps_count, cc.rewards_earned, cc.last_stamp_date
+      `SELECT 
+        c.id,
+        c.name,
+        c.phone,
+        c.email,
+        cc.id as customer_card_id,
+        cc.stamps_count as stamps,
+        lc.stamps_required as totalStamps,
+        cc.rewards_earned,
+        c.created_at as joinDate,
+        cc.last_stamp_date as lastVisit,
+        CASE 
+          WHEN cc.stamps_count >= lc.stamps_required THEN 'completed'
+          ELSE 'active'
+        END as status
        FROM customers c
        JOIN customer_cards cc ON c.id = cc.customer_id
+       JOIN loyalty_cards lc ON cc.card_id = lc.id
        WHERE cc.business_id = $1
-       ORDER BY cc.last_stamp_date DESC`,
-      [req.user.businessId]
+       ORDER BY cc.last_stamp_date DESC NULLS LAST, c.created_at DESC`,
+      [businessId]
     );
     
-    res.json(result.rows);
+    console.log(`Found ${result.rows.length} customers for business ${businessId}`);
+    
+    // Format the response to match the frontend expectations
+    const customers = result.rows.map(customer => ({
+      id: customer.id,
+      customerCardId: customer.customer_card_id, // Important for stamp actions
+      name: customer.name,
+      phone: customer.phone,
+      email: customer.email || `${customer.phone.replace('+', '')}@example.com`,
+      stamps: customer.stamps,
+      totalStamps: customer.totalstamps,
+      rewardsEarned: customer.rewards_earned || 0,
+      joinDate: customer.joindate.toISOString().split('T')[0],
+      lastVisit: customer.lastvisit ? customer.lastvisit.toISOString().split('T')[0] : customer.joindate.toISOString().split('T')[0],
+      status: customer.status,
+      transactions: [] // Can be populated later if needed
+    }));
+    
+    res.json(customers);
+    
   } catch (error) {
     console.error('Error fetching customers:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// Register customer (from customer app)
-app.post('/api/customers/register', async (req, res) => {
-  try {
-    const { name, phone, cardId } = req.body;
-    
-    // For now, skip card validation and use default card data
-    const defaultCard = {
-  id: '00000000-0000-0000-0000-000000000001', // Valid UUID format
-  stamps_required: 10,
-  business_id: 'c913afc0-05fd-4b85-8261-e10e836e18b1' // Valid UUID format
-};
-    
-    // Check if customer exists
-    let customer;
-    const existingCustomer = await db.query(
-      'SELECT * FROM customers WHERE phone = $1',
-      [phone]
-    );
-    
-    if (existingCustomer.rows.length > 0) {
-      customer = existingCustomer.rows[0];
-    } else {
-      // Create new customer
-      const newCustomer = await db.query(
-        'INSERT INTO customers (name, phone) VALUES ($1, $2) RETURNING *',
-        [name, phone]
-      );
-      customer = newCustomer.rows[0];
-    }
-    
-    // Generate QR code data
-    const qrData = `LOYALTYJO-${phone}-${cardId}-${customer.id}`;
-    
-    // Check if customer_card relationship exists
-    const existingCustomerCard = await db.query(
-      'SELECT * FROM customer_cards WHERE customer_id = $1',
-      [customer.id]
-    );
-    
-    let customerCard;
-    if (existingCustomerCard.rows.length > 0) {
-      customerCard = existingCustomerCard.rows[0];
-    } else {
-      // Create customer_card relationship
-      const newCustomerCard = await db.query(
-        `INSERT INTO customer_cards (customer_id, card_id, business_id, stamps_count, qr_code_data)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [customer.id, defaultCard.id, defaultCard.business_id, 0, qrData]
-      );
-      customerCard = newCustomerCard.rows[0];
-    }
-    
-    res.json({
-      success: true,
-      customer: {
-        id: customer.id,
-        name: customer.name,
-        phone: customer.phone,
-        stamps: customerCard.stamps_count,
-        totalStamps: defaultCard.stamps_required,
-        qrData: qrData
-      }
+    res.status(500).json({ 
+      message: 'Error fetching customers: ' + error.message,
+      customers: [] // Return empty array on error
     });
-    
-  } catch (error) {
-    console.error('Customer registration error:', error);
-    res.status(500).json({ message: 'Registration failed', error: error.message });
   }
 });
-
 // ============================================================================
 // STAMP ROUTES
 // ============================================================================
@@ -674,43 +641,192 @@ app.post('/api/stamps/add', authenticateToken, async (req, res) => {
   try {
     const { customerCardId, customerId } = req.body;
     
-    // Get customer card
-    const cardResult = await db.query(
-      `SELECT * FROM customer_cards 
-       WHERE (id = $1 OR qr_code_data = $1) 
-       AND business_id = $2`,
-      [customerCardId, req.user.businessId]
-    );
+    console.log('Adding stamp request:', { customerCardId, customerId });
     
-    if (cardResult.rows.length === 0) {
-      return res.status(404).json({ message: 'Customer card not found' });
+    // Get business ID from token, fallback to Sunshine Cafe ID
+    const businessId = req.user.businessId || 'c913afc0-05fd-4b85-8261-e10e836e18b1';
+    
+    // Get customer card - try by customerCardId first, then by customerId
+    let cardResult;
+    if (customerCardId) {
+      cardResult = await db.query(
+        `SELECT cc.*, lc.stamps_required 
+         FROM customer_cards cc
+         JOIN loyalty_cards lc ON cc.card_id = lc.id
+         WHERE cc.id = $1 AND cc.business_id = $2`,
+        [customerCardId, businessId]
+      );
+    } else if (customerId) {
+      cardResult = await db.query(
+        `SELECT cc.*, lc.stamps_required 
+         FROM customer_cards cc
+         JOIN loyalty_cards lc ON cc.card_id = lc.id
+         WHERE cc.customer_id = $1 AND cc.business_id = $2`,
+        [customerId, businessId]
+      );
+    }
+    
+    if (!cardResult || cardResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Customer card not found for this business' 
+      });
     }
     
     const customerCard = cardResult.rows[0];
+    console.log('Found customer card:', customerCard.id, 'Current stamps:', customerCard.stamps_count);
     
-    // Add stamp
-    await db.query(
-      `INSERT INTO stamp_transactions 
-       (customer_card_id, business_id, staff_id, transaction_type)
-       VALUES ($1, $2, $3, 'stamp')`,
-      [customerCard.id, req.user.businessId, req.user.staffId || null]
-    );
+    // Check if already at max stamps
+    if (customerCard.stamps_count >= customerCard.stamps_required) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Customer already has maximum stamps. Please redeem reward first.' 
+      });
+    }
     
-    // Update stamp count
-    await db.query(
-      `UPDATE customer_cards 
-       SET stamps_count = stamps_count + 1, 
-           last_stamp_date = NOW()
-       WHERE id = $1`,
-      [customerCard.id]
-    );
+    // Start transaction
+    await db.query('BEGIN');
     
-    res.json({ success: true, message: 'Stamp added successfully' });
+    try {
+      // Add stamp transaction record
+      await db.query(
+        `INSERT INTO stamp_transactions 
+         (customer_card_id, business_id, transaction_type, stamps_added)
+         VALUES ($1, $2, 'stamp', 1)`,
+        [customerCard.id, businessId]
+      );
+      
+      // Update stamp count
+      const newStampCount = customerCard.stamps_count + 1;
+      await db.query(
+        `UPDATE customer_cards 
+         SET stamps_count = $1, last_stamp_date = NOW()
+         WHERE id = $2`,
+        [newStampCount, customerCard.id]
+      );
+      
+      await db.query('COMMIT');
+      
+      console.log('Stamp added successfully. New count:', newStampCount);
+      
+      res.json({ 
+        success: true, 
+        message: 'Stamp added successfully!',
+        newStampCount: newStampCount,
+        maxStamps: customerCard.stamps_required,
+        canRedeem: newStampCount >= customerCard.stamps_required
+      });
+      
+    } catch (error) {
+      await db.query('ROLLBACK');
+      throw error;
+    }
+    
   } catch (error) {
     console.error('Error adding stamp:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Error adding stamp: ' + error.message 
+    });
   }
 });
+
+// Redeem reward (for business dashboard)
+app.post('/api/stamps/redeem', authenticateToken, async (req, res) => {
+  try {
+    const { customerCardId, customerId } = req.body;
+    
+    console.log('Redeem reward request:', { customerCardId, customerId });
+    
+    // Get business ID from token, fallback to Sunshine Cafe ID
+    const businessId = req.user.businessId || 'c913afc0-05fd-4b85-8261-e10e836e18b1';
+    
+    // Get customer card - try by customerCardId first, then by customerId
+    let cardResult;
+    if (customerCardId) {
+      cardResult = await db.query(
+        `SELECT cc.*, lc.stamps_required 
+         FROM customer_cards cc
+         JOIN loyalty_cards lc ON cc.card_id = lc.id
+         WHERE cc.id = $1 AND cc.business_id = $2`,
+        [customerCardId, businessId]
+      );
+    } else if (customerId) {
+      cardResult = await db.query(
+        `SELECT cc.*, lc.stamps_required 
+         FROM customer_cards cc
+         JOIN loyalty_cards lc ON cc.card_id = lc.id
+         WHERE cc.customer_id = $1 AND cc.business_id = $2`,
+        [customerId, businessId]
+      );
+    }
+    
+    if (!cardResult || cardResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Customer card not found for this business' 
+      });
+    }
+    
+    const customerCard = cardResult.rows[0];
+    console.log('Found customer card:', customerCard.id, 'Current stamps:', customerCard.stamps_count);
+    
+    // Check if customer has enough stamps
+    if (customerCard.stamps_count < customerCard.stamps_required) {
+      return res.status(400).json({ 
+        success: false,
+        message: `Customer needs ${customerCard.stamps_required - customerCard.stamps_count} more stamps to redeem reward.` 
+      });
+    }
+    
+    // Start transaction
+    await db.query('BEGIN');
+    
+    try {
+      // Add redemption transaction record
+      await db.query(
+        `INSERT INTO stamp_transactions 
+         (customer_card_id, business_id, transaction_type, stamps_added)
+         VALUES ($1, $2, 'redeem', 0)`,
+        [customerCard.id, businessId]
+      );
+      
+      // Reset stamp count and increment rewards
+      await db.query(
+        `UPDATE customer_cards 
+         SET stamps_count = 0, 
+             rewards_earned = COALESCE(rewards_earned, 0) + 1,
+             rewards_redeemed = COALESCE(rewards_redeemed, 0) + 1,
+             last_stamp_date = NOW()
+         WHERE id = $1`,
+        [customerCard.id]
+      );
+      
+      await db.query('COMMIT');
+      
+      console.log('Reward redeemed successfully for customer card:', customerCard.id);
+      
+      res.json({ 
+        success: true, 
+        message: 'Reward redeemed successfully!',
+        newStampCount: 0,
+        rewardsEarned: (customerCard.rewards_earned || 0) + 1
+      });
+      
+    } catch (error) {
+      await db.query('ROLLBACK');
+      throw error;
+    }
+    
+  } catch (error) {
+    console.error('Error redeeming reward:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error redeeming reward: ' + error.message 
+    });
+  }
+});
+
 
 // ============================================================================
 // ANALYTICS ROUTES
