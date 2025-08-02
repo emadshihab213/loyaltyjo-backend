@@ -572,6 +572,100 @@ app.post('/api/loyalty-cards', authenticateToken, async (req, res) => {
   }
 });
 
+// ============================================================================
+// CUSTOMER ROUTES
+// ============================================================================
+
+// Register customer (from customer app)
+app.post('/api/customers/register', async (req, res) => {
+  try {
+    const { name, phone, cardId } = req.body;
+    
+    console.log('Customer registration attempt:', { name, phone, cardId });
+    
+    // Use the actual default card from your database
+    const defaultCard = {
+      id: '00000000-0000-0000-0000-000000000001', // Valid UUID format
+      stamps_required: 10,
+      business_id: 'c913afc0-05fd-4b85-8261-e10e836e18b1' // Valid UUID format
+    };
+    
+    // Check if customer exists
+    let customer;
+    const existingCustomer = await db.query(
+      'SELECT * FROM customers WHERE phone = $1',
+      [phone]
+    );
+    
+    if (existingCustomer.rows.length > 0) {
+      customer = existingCustomer.rows[0];
+      console.log('Existing customer found:', customer.id);
+    } else {
+      // Create new customer
+      const newCustomer = await db.query(
+        'INSERT INTO customers (name, phone) VALUES ($1, $2) RETURNING *',
+        [name, phone]
+      );
+      customer = newCustomer.rows[0];
+      console.log('New customer created:', customer.id);
+    }
+    
+    // Generate QR code data - this is the KEY part that was missing!
+    const qrData = `LOYALTYJO-${phone}-${cardId}-${customer.id}`;
+    console.log('Generated QR data:', qrData);
+    
+    // Check if customer_card relationship exists
+    const existingCustomerCard = await db.query(
+      'SELECT * FROM customer_cards WHERE customer_id = $1 AND card_id = $2',
+      [customer.id, defaultCard.id]
+    );
+    
+    let customerCard;
+    if (existingCustomerCard.rows.length > 0) {
+      customerCard = existingCustomerCard.rows[0];
+      console.log('Existing customer card found:', customerCard.id);
+      
+      // Update QR data if missing
+      if (!customerCard.qr_code_data) {
+        await db.query(
+          'UPDATE customer_cards SET qr_code_data = $1 WHERE id = $2',
+          [qrData, customerCard.id]
+        );
+        customerCard.qr_code_data = qrData;
+      }
+    } else {
+      // Create customer_card relationship with QR data
+      const newCustomerCard = await db.query(
+        `INSERT INTO customer_cards (customer_id, card_id, business_id, stamps_count, qr_code_data)
+         VALUES ($1, $2, $3, 0, $4) RETURNING *`,
+        [customer.id, defaultCard.id, defaultCard.business_id, qrData]
+      );
+      customerCard = newCustomerCard.rows[0];
+      console.log('New customer card created:', customerCard.id);
+    }
+    
+    res.json({
+      success: true,
+      customer: {
+        id: customer.id,
+        name: customer.name,
+        phone: customer.phone,
+        stamps: customerCard.stamps_count,
+        totalStamps: defaultCard.stamps_required,
+        qrData: qrData
+      }
+    });
+    
+  } catch (error) {
+    console.error('Customer registration error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Registration failed', 
+      error: error.message 
+    });
+  }
+});
+
 // Get customers for a business
 app.get('/api/customers', authenticateToken, async (req, res) => {
   try {
@@ -632,6 +726,7 @@ app.get('/api/customers', authenticateToken, async (req, res) => {
     });
   }
 });
+
 // ============================================================================
 // STAMP ROUTES
 // ============================================================================
